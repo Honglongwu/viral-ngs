@@ -163,6 +163,7 @@ sub calcNtFreq
 
 sub alignReads
 {
+	use autodie qw(:all);
 	foreach my $contid (keys %segments)
 	{
 		my $file = "$output"."_$contid.fa";
