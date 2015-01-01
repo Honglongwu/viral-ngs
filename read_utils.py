@@ -111,13 +111,10 @@ def parser_index_fasta_samtools() :
     parser = argparse.ArgumentParser(
         description='''Index a reference genome for Samtools.''')
     parser.add_argument('inFasta', help='Reference genome, FASTA format.')
-    parser.add_argument("--overwrite",
-        help="If index exists, remove it and regenerate it (default: %(default)s)",
-        default=False, action="store_true", dest="overwrite")
     util.cmd.common_args(parser, (('loglevel', None), ('version', None)))
     return parser
 def main_index_fasta_samtools(args) :
-    tools.samtools.SamtoolsTool().faidx(args.inFasta, overwrite=args.overwrite)
+    tools.samtools.SamtoolsTool().faidx(args.inFasta, overwrite=True)
     return 0
 __commands__.append(('index_fasta_samtools',
     main_index_fasta_samtools, parser_index_fasta_samtools))
@@ -131,9 +128,6 @@ def parser_index_fasta_picard() :
         description='''Create an index file for a reference genome suitable
                     for Picard/GATK.''')
     parser.add_argument('inFasta', help='Input reference genome, FASTA format.')
-    parser.add_argument("--overwrite",
-        help="If index exists, remove it and regenerate it (default: %(default)s)",
-        default=False, action="store_true", dest="overwrite")
     parser.add_argument('--JVMmemory', default = tools.picard.CreateSequenceDictionaryTool.jvmMemDefault,
         help='JVM virtual memory size (default: %(default)s)')
     parser.add_argument('--picardOptions', default = [], nargs='*',
@@ -142,7 +136,7 @@ def parser_index_fasta_picard() :
     return parser
 def main_index_fasta_picard(args) :
     tools.picard.CreateSequenceDictionaryTool().execute(
-        args.inFasta, overwrite=args.overwrite,
+        args.inFasta, overwrite=True,
         picardOptions=args.picardOptions, JVMmemory=args.JVMmemory)
     return 0
 __commands__.append(('index_fasta_picard',
@@ -574,24 +568,13 @@ def mvicuna_fastqs_to_readlist(inFastq1, inFastq2, readList):
     os.unlink(outFastq1)
     os.unlink(outFastq2)
 
-def parser_rmdup_mvicuna_bam() :
-    parser = argparse.ArgumentParser(
-        description='''Remove duplicate reads from BAM file using M-Vicuna. The
-            primary advantage to this approach over Picard's MarkDuplicates tool
-            is that Picard requires that input reads are aligned to a reference,
-            and M-Vicuna can operate on unaligned reads.''')
-    parser.add_argument('inBam', help='Input reads, BAM format.')
-    parser.add_argument('outBam', help='Output reads, BAM format.')
-    util.cmd.common_args(parser, (('loglevel', None), ('version', None), ('tmpDir', None)))
-    return parser
-def main_rmdup_mvicuna_bam(args) :
-    
+def rmdup_mvicuna_bam(inBam, outBam, JVMmemory=None):
     # Convert BAM -> FASTQ pairs per read group and load all read groups
     tempDir = tempfile.mkdtemp()
-    tools.picard.SamToFastqTool().per_read_group(args.inBam, tempDir,
+    tools.picard.SamToFastqTool().per_read_group(inBam, tempDir,
         picardOptions=['VALIDATION_STRINGENCY=LENIENT'])
     read_groups = [x[1:] for x in
-        tools.samtools.SamtoolsTool().getHeader(args.inBam)
+        tools.samtools.SamtoolsTool().getHeader(inBam)
         if x[0]=='@RG']
     read_groups = [dict(pair.split(':',1) for pair in rg) for rg in read_groups]
     
@@ -616,17 +599,35 @@ def main_rmdup_mvicuna_bam(args) :
             with open(infastqs[d], 'wt') as outf:
                 for fprefix in files:
                     fn = '%s_%d.fastq' % (fprefix, d+1)
-                    with open(fn, 'rt') as inf:
-                        for line in inf:
-                            outf.write(line)
-                    os.unlink(fn)
+                    if os.path.isfile(fn):
+                        with open(fn, 'rt') as inf:
+                            for line in inf:
+                                outf.write(line)
+                        os.unlink(fn)
+                    else:
+                        log.warn("no reads found in %s, assuming that's because there's no reads in that read group" % fn)
         
         # M-Vicuna DupRm to see what we should keep (append IDs to running file)
         mvicuna_fastqs_to_readlist(infastqs[0], infastqs[1], readList)
         map(os.unlink, infastqs)
     
     # Filter original input BAM against keep-list
-    tools.picard.FilterSamReadsTool().execute(args.inBam, False, readList, args.outBam)
+    tools.picard.FilterSamReadsTool().execute(inBam, False, readList, outBam, JVMmemory=JVMmemory)
+
+def parser_rmdup_mvicuna_bam() :
+    parser = argparse.ArgumentParser(
+        description='''Remove duplicate reads from BAM file using M-Vicuna. The
+            primary advantage to this approach over Picard's MarkDuplicates tool
+            is that Picard requires that input reads are aligned to a reference,
+            and M-Vicuna can operate on unaligned reads.''')
+    parser.add_argument('inBam', help='Input reads, BAM format.')
+    parser.add_argument('outBam', help='Output reads, BAM format.')
+    parser.add_argument('--JVMmemory', default = tools.picard.FilterSamReadsTool.jvmMemDefault,
+        help='JVM virtual memory size (default: %(default)s)')
+    util.cmd.common_args(parser, (('loglevel', None), ('version', None), ('tmpDir', None)))
+    return parser
+def main_rmdup_mvicuna_bam(args) :
+    rmdup_mvicuna_bam(args.inBam, args.outBam, JVMmemory=args.JVMmemory)
     return 0
 __commands__.append(('rmdup_mvicuna_bam', main_rmdup_mvicuna_bam, parser_rmdup_mvicuna_bam))
 
@@ -668,8 +669,8 @@ def rmdup_prinseq_fastq(inFastq, outFastq):
         log.info("output is empty: no reads in input match refDb")
         shutil.copyfile(inFastq, outFastq)
     else:
-        prinseqCmd = [
-            'perl', prinseqPath,
+        cmd = [
+            'perl', tools.prinseq.PrinseqTool().install_and_get_path(),
                 '-ns_max_n', '1',
                 '-derep', '1',
                 '-fastq', inFastq,
@@ -677,8 +678,8 @@ def rmdup_prinseq_fastq(inFastq, outFastq):
                 '-line_width', '0',
                 '-out_good', outFastq[:-6]
             ]
-        log.debug(' '.join(prinseqCmd))
-        subprocess.check_call(prinseqCmd)
+        log.debug(' '.join(cmd))
+        subprocess.check_call(cmd)
 def parser_rmdup_prinseq_fastq() :
     parser = argparse.ArgumentParser(
         description='''Run prinseq-lite's duplicate removal operation on paired-end 
@@ -687,9 +688,9 @@ def parser_rmdup_prinseq_fastq() :
         help='Input fastq file; 1st end of paired-end reads.')
     parser.add_argument('inFastq2',
         help='Input fastq file; 2nd end of paired-end reads.')
-    parser.add_argument('pairedOutFastq1',
+    parser.add_argument('outFastq1',
         help='Output fastq file; 1st end of paired-end reads.')
-    parser.add_argument('pairedOutFastq2',
+    parser.add_argument('outFastq2',
         help='Output fastq file; 2nd end of paired-end reads.')
     util.cmd.common_args(parser, (('loglevel', None), ('version', None), ('tmpDir', None)))
     return parser

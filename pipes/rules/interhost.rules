@@ -24,7 +24,7 @@ rule all_ref_guided:
                 dir=config["reportsDir"],
                 adjective=['raw','cleaned',
                     'ref_align', 'ref_mapped', 'ref_rmdup', 'ref_realigned'],
-                sample=read_samples_file(config["samples_depletion"])),
+                sample=read_samples_file(config["samples_per_run"])),
             config["reportsDir"]+'/summary.coverage_ref.txt.gz'
 
 rule map_reads_to_ref:
@@ -34,7 +34,7 @@ rule map_reads_to_ref:
             config["dataDir"]+'/'+config["subdirs"]["align_ref"]+'/{sample}.rmdup.bam',
             config["dataDir"]+'/'+config["subdirs"]["align_ref"]+'/{sample}.realigned.bam'
     resources: mem=8
-    params: LSF='-q week',
+    params: LSF='-W 4:00',
             logid="{sample}",
             refGenome=config["ref_genome"],
             tmpf_intervals=config["tmpDir"]+'/'+config["subdirs"]["assembly"]+'/{sample}.aligned_to_ref.intervals'
@@ -68,17 +68,19 @@ rule ref_guided_diversity:
                 dataDir=config["dataDir"],
                 subdir=config["subdirs"]["align_ref"],
                 ext = ['fasta', 'vcf.gz'],
-                sample=read_samples_file(config["samples_depletion"]))
+                sample=read_samples_file(config["samples_per_run"]))
     output: os.path.join(config["dataDir"], config["subdirs"]["interhost"], 'ref_guided.fasta'),
             os.path.join(config["dataDir"], config["subdirs"]["interhost"], 'ref_guided.vcf.gz')
-    params: logid="all",
+    resources: mem=8
+    params: LSF='-W 4:00',
+            logid="all",
             refGenome=config["ref_genome"],
             inFastas = expand("{dataDir}/{subdir}/{sample}.fasta",
                 dataDir=config["dataDir"], subdir=config["subdirs"]["align_ref"],
-                sample=read_samples_file(config["samples_depletion"])),
+                sample=read_samples_file(config["samples_per_run"])),
             inVcfs = expand("{dataDir}/{subdir}/{sample}.vcf.gz",
                 dataDir=config["dataDir"], subdir=config["subdirs"]["align_ref"],
-                sample=read_samples_file(config["samples_depletion"]))
+                sample=read_samples_file(config["samples_per_run"]))
     run:
             update_timestamps(input)
             shell("cat {params.inFastas} > {output[0]}")
